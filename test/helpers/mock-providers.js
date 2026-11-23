@@ -88,7 +88,10 @@ function startMockProviders({ lines = 120, llmDelayMs = 30 } = {}) {
         state.chatBodies.push(j);
         if (state.rejectChat) return json(503, { error: 'offline' });
         const payload = JSON.parse(j.messages[j.messages.length - 1].content);
-        return setTimeout(() => json(200, { choices: [{ message: { content: JSON.stringify(greek(payload.lines, 'ΕΛ')) } }] }), llmDelayMs);
+        const out = greek(payload.lines, 'ΕΛ');
+        // state.dropLines = N: answer with the last N lines missing (an incomplete local-model reply).
+        if (state.dropLines) Object.keys(out).slice(-state.dropLines).forEach((k) => delete out[k]);
+        return setTimeout(() => json(200, { choices: [{ message: { content: JSON.stringify(out) } }] }), llmDelayMs);
       }
 
       // ---- OpenRouter OAuth PKCE ----

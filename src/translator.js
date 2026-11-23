@@ -9,6 +9,7 @@ const { chat, LANGUAGES, PROVIDERS, localModelAvailable } = require('./providers
 const { toSrt } = require('./subtitles');
 const { downloadCues } = require('./sync');
 const { DATA_DIR, effectiveLimits } = require('./config');
+const { jobEvent, shortUrl } = require('./logbook');
 
 const CACHE_DIR = path.join(DATA_DIR, 'cache');
 const CACHE_DAYS = parseFloat(process.env.CACHE_DAYS || '30');
@@ -74,13 +75,20 @@ function parseModelJson(text) {
   return obj;
 }
 
-async function translateLines(lines, context, cfg) {
+// True when the configured cloud provider can actually be called (a key or a stored sign-in).
+const hasCloudCredentials = (cfg) => cfg.provider === 'custom' || !!cfg.apiKey || !!cfg.credId;
+const filled = (result, keys) => keys.filter((key) => typeof result?.[key] === 'string' && result[key].trim());
+
+// `stats` (optional, per job) counts which engine answered and records local-model problems for the logs.
+async function translateLines(lines, context, cfg, stats = null) {
   const payload = { context, lines };
   const keys = Object.keys(lines);
   const translate = async (provider) => parseModelJson(
     await chat(provider, systemPrompt(cfg), JSON.stringify(payload), { keys }),
   );
   if (cfg.provider !== 'custom' && cfg.localBaseUrl) {
+    let partial = null;
+    let why = '';
     const local = {
       ...cfg,
       provider: 'custom',
@@ -95,14 +103,41 @@ async function translateLines(lines, context, cfg) {
     try {
       if (await localModelAvailable(local)) {
         const result = await translate(local);
-        if (keys.every((key) => typeof result?.[key] === 'string' && result[key].trim())) return result;
+        const got = filled(result, keys);
+        if (got.length === keys.length) {
+          if (stats) stats.local += 1;
+          return result;
+        }
+        partial = got.length ? result : null;
+        why = `incomplete answer (${got.length}/${keys.length} lines)`;
+      } else {
+        why = `model ${local.model} not loaded / server not answering`;
       }
-    } catch {
-      // Continue with the configured cloud provider when the local attempt fails.
+    } catch (e) {
+      why = e.message || String(e);
     } finally {
       releaseSlot(poolKey);
     }
+    const host = (() => { try { return new URL(local.baseUrl).host; } catch { return local.baseUrl; } })();
+    if (stats) {
+      stats.localFailures += 1;
+      stats.lastLocalError = why;
+      // First problem per job goes to the log in full; the total is in the job's done/error line.
+      if (stats.localFailures === 1) console.warn(`[local] ${stats.key || ''} ${host}: ${why}`);
+    }
+    if (!hasCloudCredentials(cfg)) {
+      // No cloud key to fall back to: keep what the local model did translate (the missing lines are
+      // retried by translateBatch), or fail just this batch — never call the cloud without a key, which
+      // used to end the whole job with "401: You didn't provide an API key".
+      if (partial) {
+        if (stats) stats.local += 1;
+        return partial;
+      }
+      throw Object.assign(new Error(`Local model (${host}): ${why} — and no cloud API key is configured to fall back to`), { noCloud: true });
+    }
+    // Otherwise continue with the configured cloud provider.
   }
+  if (stats) stats.cloud += 1;
   return translate(cfg);
 }
 
@@ -171,7 +206,7 @@ async function translateBatch(job, idxs, cfg, depth = 0) {
   const context = job.cues.slice(Math.max(0, first - 3), first).map((c) => c.text);
   let result;
   try {
-    result = await translateLines(lines, context, cfg);
+    result = await translateLines(lines, context, cfg, job.stats);
   } catch (e) {
     job.lastError = e.message;
     if (e.fatal || e.status === 401 || e.status === 403 || e.status === 404) throw e; // bad key/model/sign-in: abort job
@@ -217,6 +252,16 @@ async function runJob(job, srcUrl, cfg) {
     const { batchSize, concurrency } = effectiveLimits(cfg);
     const batches = makeBatches(cues, batchSize);
     job.translateStart = Date.now();
+    jobEvent('source', { key: job.key, title: job.title, cues: cues.length, batches: batches.length, concurrency });
+    let milestone = 25;
+    const progress = () => {
+      const pct = Math.floor((job.done / job.total) * 100);
+      if (pct < milestone || milestone > 75) return;
+      while (milestone <= 75 && pct >= milestone) milestone += 25;
+      const secs = Math.round((Date.now() - job.startedAt) / 1000);
+      console.log(`[progress] ${job.key} ${pct}% (${job.done}/${job.total}, ${job.failed} failed, ${secs}s)`);
+      jobEvent('progress', { key: job.key, title: job.title, pct, done: job.done, failed: job.failed, seconds: secs, ...engineStats(job) });
+    };
     let next = 0;
     let fatal = null;
     const poolKey = `${cfg.baseUrl}|${cfg.model}|${cfg.apiKey}|${cfg.credId}`;
@@ -232,6 +277,7 @@ async function runJob(job, srcUrl, cfg) {
           } catch (e) {
             fatal = e;
           }
+          if (!fatal) progress();
           if (next < batches.length && !fatal) await yieldSlot(poolKey, prio);
         }
       } finally {
@@ -246,32 +292,70 @@ async function runJob(job, srcUrl, cfg) {
     job.status = 'done';
     job.finishedAt = Date.now();
     // Only cache fully (or nearly fully) translated files so transient failures get retried later.
-    if (job.failed / job.total < 0.02) fs.writeFileSync(path.join(CACHE_DIR, `${job.key}.srt`), job.srt, 'utf8');
-    console.log(`[done] ${job.key} ${job.total} cues, ${job.failed} failed, ${((job.finishedAt - job.startedAt) / 1000).toFixed(1)}s`);
+    const cached = job.failed / job.total < 0.02;
+    if (cached) fs.writeFileSync(path.join(CACHE_DIR, `${job.key}.srt`), job.srt, 'utf8');
+    const secs = (job.finishedAt - job.startedAt) / 1000;
+    console.log(`[done] ${job.key} ${job.total} cues, ${job.failed} failed, ${secs.toFixed(1)}s${engineNote(job)}`);
+    jobEvent('done', {
+      key: job.key, title: job.title, cues: job.total, failed: job.failed, seconds: +secs.toFixed(1),
+      cached, ...engineStats(job), lastError: job.failed ? job.lastError : undefined,
+    });
   } catch (e) {
     job.status = 'error';
     job.error = e.message;
     job.finishedAt = Date.now();
-    console.error(`[error] ${job.key}: ${e.message}`);
+    console.error(`[error] ${job.key}: ${e.message}${engineNote(job)}`);
+    jobEvent('error', {
+      key: job.key, title: job.title, error: e.message, status: e.status,
+      pct: job.total ? Math.floor((job.done / job.total) * 100) : 0, done: job.done, failed: job.failed, cues: job.total,
+      seconds: +((job.finishedAt - job.startedAt) / 1000).toFixed(1), ...engineStats(job),
+    });
   }
 }
 
-function getOrStartJob(srcUrl, cfg) {
+const engineStats = (job) => ({
+  localBatches: job.stats.local, cloudBatches: job.stats.cloud,
+  localFailures: job.stats.localFailures, lastLocalError: job.stats.lastLocalError || undefined,
+});
+const engineNote = (job) => (job.stats.localFailures
+  ? ` · local model: ${job.stats.local} ok / ${job.stats.localFailures} failed (last: ${job.stats.lastLocalError}) · cloud: ${job.stats.cloud}`
+  : '');
+
+// `meta` (optional): { type, id, via } — which title asked for this, and how (watch, listing, early, prefetch).
+function getOrStartJob(srcUrl, cfg, meta = {}) {
   const key = jobKey(srcUrl, cfg);
   let job = jobs.get(key);
   // Retry failed jobs after 60 s.
-  if (job && job.status === 'error' && Date.now() - job.finishedAt > 60000) job = null;
-  if (job) return job;
+  const retryOf = job && job.status === 'error' && Date.now() - job.finishedAt > 60000 ? job : null;
+  if (retryOf) job = null;
+  if (job) {
+    if (!job.title && meta.id) job.title = `${meta.type || ''} ${meta.id}`.trim();
+    return job;
+  }
 
-  job = { key, status: 'downloading', done: 0, failed: 0, total: 0, startedAt: Date.now(), srcUrl };
+  const title = meta.id ? `${meta.type || ''} ${meta.id}`.trim() : retryOf?.title;
+  job = {
+    key, status: 'downloading', done: 0, failed: 0, total: 0, startedAt: Date.now(), srcUrl, title,
+    stats: { key, local: 0, cloud: 0, localFailures: 0, lastLocalError: '' },
+  };
   const cacheFile = path.join(CACHE_DIR, `${key}.srt`);
   if (fs.existsSync(cacheFile)) {
     job.status = 'done';
     job.srt = fs.readFileSync(cacheFile, 'utf8');
     job.finishedAt = Date.now();
     job.promise = Promise.resolve();
+    jobEvent('cache-hit', { key, title, via: meta.via, src: shortUrl(srcUrl) });
   } else {
-    console.log(`[start] ${key} ${cfg.provider}/${cfg.model} -> ${cfg.targetLang}`);
+    if (retryOf) {
+      console.log(`[retry] ${key} after error: ${retryOf.error}`);
+      jobEvent('retry', { key, title, previousError: retryOf.error, via: meta.via });
+    }
+    console.log(`[start] ${key} ${cfg.provider}/${cfg.model} -> ${cfg.targetLang}${title ? ` · ${title}` : ''}${meta.via ? ` (${meta.via})` : ''}`);
+    jobEvent('start', {
+      key, title, via: meta.via, provider: cfg.provider, model: cfg.model, target: cfg.targetLang,
+      localModel: cfg.provider !== 'custom' && cfg.localBaseUrl ? shortUrl(cfg.localBaseUrl).split('/')[0] : undefined,
+      cloudKey: hasCloudCredentials(cfg), src: shortUrl(srcUrl),
+    });
     job.promise = runJob(job, srcUrl, cfg);
   }
   jobs.set(key, job);

@@ -74,6 +74,9 @@ Useful commands afterwards:
 systemctl status aio-streams-subtitles-greek       # is it running?
 journalctl -u aio-streams-subtitles-greek -f       # live logs
 sudo systemctl restart aio-streams-subtitles-greek # restart
+# Kept on the data disk, survive reboots (the journal on Armbian/Orange Pi lives in RAM):
+sudo tail -f /opt/aio-streams-subtitles-greek/data/logs/addon-$(date +%F).log   # today's full log
+sudo tail -n 20 /opt/aio-streams-subtitles-greek/data/logs/jobs-$(date +%Y-%m).jsonl  # translation jobs
 ```
 
 ---
@@ -461,6 +464,13 @@ Then remove the addon in Stremio (**Add-ons → AIO-Streams&Subtitles-Greek → 
 | AIOStreams page doesn't load | `docker ps` should show `aiostreams` as healthy; first start takes a minute or two. Logs: `docker logs -f aiostreams`. Outside access needs the router forward for 8444. |
 | Port 7000 already in use | The installer picks the next free port automatically; for manual runs set `PORT`. |
 
-Logs: `journalctl -u aio-streams-subtitles-greek -f` (installer), `docker logs -f aiostreams` (AIOStreams), `docker logs -f ai-greek-subs` (Docker), or the terminal (manual). Each translation logs lines like `[start]`, `[serve] … translating 47%`, `[done] … 1010 cues, 0 failed, 56.5s`.
+Logs: `journalctl -u aio-streams-subtitles-greek -f` (installer), `docker logs -f aiostreams` (AIOStreams), `docker logs -f ai-greek-subs` (Docker), or the terminal (manual). Each translation logs lines like `[start]`, `[serve] … translating 47%`, `[progress] … 50%`, `[done] … 1010 cues, 0 failed, 56.5s`.
+
+The addon also keeps its own logs in `DATA_DIR/logs` (for the installer: `/opt/aio-streams-subtitles-greek/data/logs`), independent of the system journal:
+
+- `addon-YYYY-MM-DD.log` — every log line with a timestamp; kept 90 days (`LOG_DAYS`).
+- `jobs-YYYY-MM.jsonl` — one JSON line per translation-job event: `listing` (which tracks were offered, real subtitle used or not), `start`, `source`, `progress` (25/50/75%), `done` / `error` (cues, failed lines, duration, local-model vs cloud batches, last local-model error), `retry`, `cache-hit`, `real-subtitle-error`; kept 400 days (`JOB_LOG_DAYS`).
+
+API keys and bearer tokens are masked. Set `LOG_TO_FILES=off` to disable the files.
 
 Still stuck? [Open an issue](https://github.com/jfle/aio-streams-subtitles-greek/issues/new/choose) with the log lines (remove anything personal).

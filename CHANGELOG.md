@@ -4,6 +4,12 @@ All notable changes to this project. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [2.1.1] — 2026-11-23
+
+- Keep persistent logs on the data disk in `DATA_DIR/logs`: a timestamped daily log of every line (kept 90 days) and a JSON-lines history of every translation job — listing decision, start, progress, done/error with cue and failure counts, local-model vs cloud batches, retries and cache hits (kept 400 days). The system journal alone was not enough on Armbian/Orange Pi, where it lives in a small RAM disk that fills up and is lost on reboot. API keys and bearer tokens are masked.
+- Fix translations with a local model (LM Studio / Krikri) and no cloud API key being abandoned at the first incomplete local answer with `HTTP 401: You didn't provide an API key`. Without a cloud key the addon now keeps the lines the local model did translate, retries the rest in smaller pieces locally, and only marks lines as failed when the local model can't do them. Local-model errors, previously hidden, are now logged.
+- Log unexpected crashes and unhandled errors to the persistent log before the service restarts.
+
 ## [2.1.0] — 2026-11-23
 
 - Add a real-subtitle-or-AI choice: when a verified subtitle already exists in the target language, offer it instead of (or alongside) the AI translation. New `nativeSubtitles` setting (`auto` | `both` | `off`, default `auto`) on the configure page. In `auto`, a verified real subtitle becomes the primary track with the AI translation kept as a `(AI)`-labeled backup; in `both`, the real subtitle is always listed alongside the AI track, labeled unverified when it couldn't be confirmed; in `off`, behavior is unchanged from before this release.

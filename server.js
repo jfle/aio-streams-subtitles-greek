@@ -1,6 +1,10 @@
 'use strict';
 // AIO-Streams&Subtitles-Greek — zero-dependency Node.js Stremio addon server.
 
+// First, so every line (including start-up errors) also lands in DATA_DIR/logs on the data disk.
+const logbook = require('./src/logbook');
+logbook.install();
+
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -134,7 +138,7 @@ async function handleStream(req, res, token, type, id) {
     const { tracks, report } = await selectSubtitles(cfg, type, id, '', { budgetMs: 5000 });
     // A verified real subtitle will be served instead of the AI one — no need to translate ahead of time.
     if (!tracks[0] || (cfg.nativeSubtitles === 'auto' && report.native && report.native.verified)) return;
-    const job = getOrStartJob(tracks[0].src, cfg);
+    const job = getOrStartJob(tracks[0].src, cfg, { type, id, via: 'early' });
     job.lastRequested = Math.max(job.lastRequested || 0, Date.now() - 1800e3);
     console.log(`[early] ${type} ${id} -> ${job.key} (${job.status})`);
   } catch (e) {
@@ -195,13 +199,21 @@ async function handleSubtitles(req, res, token, type, id, extra) {
   // real subtitle is already the default pick.
   let current = null;
   if (cfg.autoTranslate && tracks[0] && !report.hasPreferred && !useNativePrimary) {
-    const job = (current = getOrStartJob(tracks[0].src, cfg));
+    const job = (current = getOrStartJob(tracks[0].src, cfg, { type, id: decodeURIComponent(id), via: 'listing' }));
     // Ranks above older, abandoned jobs but below any track the user actually selects.
     job.lastRequested = Math.max(job.lastRequested || 0, Date.now() - 3600e3);
   }
   const d = report.decision || {};
   const nativeNote = native ? ` · real subtitle: ${native.file} (${native.quality} — ${native.why})${useNativePrimary ? ' [used as default]' : listNativeAlongside || entries.some((e) => e.lang.includes('original')) ? ' [listed]' : ' [not used]'}` : '';
   console.log(`[subs] ${type} ${decodeURIComponent(id)}: ${subtitles.length} track(s)${report.hasPreferred ? " · on demand (higher-priority subtitle available)" : ""}${nativeNote}${d.chosen ? ` · ${d.chosen} (${d.why})` : ''}${d.reuse ? ` · reusing ${d.reuse.from} (${d.reuse.fix})` : ''}`);
+  logbook.jobEvent('listing', {
+    title: `${type} ${decodeURIComponent(id)}`,
+    tracks: subtitles.map((s) => s.lang),
+    english: d.chosen || undefined,
+    real: native ? { file: native.file, quality: native.quality, verified: !!native.verified, use: useNativePrimary ? 'default' : listNativeAlongside ? 'listed' : 'not used' } : undefined,
+    aiJob: current ? current.key : undefined,
+    mode: cfg.nativeSubtitles,
+  });
   send(res, 200, { subtitles, cacheMaxAge: 60 }, undefined, { 'Cache-Control': 'max-age=60' });
   // Start the next episode only after this one is translated, so it never takes LM Studio slots from it.
   if (cfg.prefetchNext && !cfg.prioritySources.length && type === 'series') {
@@ -229,7 +241,7 @@ async function prefetchNextEpisode(cfg, id) {
   try {
     const { tracks } = await selectSubtitles(cfg, 'series', nextId, '', { budgetMs: 8000 });
     if (!tracks[0]) return;
-    const job = getOrStartJob(tracks[0].src, cfg);
+    const job = getOrStartJob(tracks[0].src, cfg, { type: 'series', id: nextId, via: 'prefetch' });
     job.lastRequested = Math.max(job.lastRequested || 0, 1); // lowest priority
     console.log(`[prefetch] ${nextId} -> ${job.key} (${job.status})`);
   } catch (e) {
@@ -248,10 +260,11 @@ async function handleTranslation(req, res, token, src, sig) {
       return send(res, 200, toSrt(cues), 'application/x-subrip; charset=utf-8', { 'Cache-Control': 'public, max-age=86400' });
     } catch (e) {
       console.error(`[native] ${srcUrl}: ${e.message}`);
+      logbook.jobEvent('real-subtitle-error', { src: logbook.shortUrl(srcUrl), error: e.message });
       return send(res, 502, 'Could not fetch the subtitle', 'text/plain');
     }
   }
-  const job = getOrStartJob(srcUrl, cfg);
+  const job = getOrStartJob(srcUrl, cfg, { via: 'watch' });
   job.lastRequested = Date.now(); // the track being watched gets the provider's slots first
   // Stremio's streaming server gives up after ~10 s, so answer well before that: return as soon as the
   // job is finished, or after ~2.5 s once the English cues are known, and never later than SUBTITLE_WAIT_MS.
