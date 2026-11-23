@@ -5,6 +5,7 @@
 const {
   fingerprint, matchContext, profile, expectedRuntime, lengthVerdict, downloadCues, align, isNoop, describeFix, rememberFps, SCALES, fpsName,
 } = require('./sync');
+const { legacyEncodingFor } = require('./subtitles');
 const { translationState } = require('./translator');
 
 function isTargetLanguage(value, target) {
@@ -47,7 +48,51 @@ async function fetchSourceSubs(cfg, type, id, extra, ctx) {
       }
     }
   }
-  return { list: out, hasPreferred };
+  // Subtitles already in the target language, from every configured source (not just prioritySources) —
+  // candidates for cfg.nativeSubtitles (use the real subtitle instead of translating one with AI).
+  const nativeSeen = new Set();
+  const native = [];
+  for (const list of responses) {
+    for (const s of list) {
+      if (s && s.url && isTargetLanguage(s.lang, cfg.targetLang) && !nativeSeen.has(s.url)) {
+        nativeSeen.add(s.url);
+        native.push(s);
+      }
+    }
+  }
+  return { list: out, native, hasPreferred };
+}
+
+// Checks whether a subtitle already in the target language is good enough to use as-is (same checks as
+// the English pipeline: release fingerprint, then length against the reference or the runtime).
+async function pickNative(cfg, candidates, ctx, { refEnd = null, runtimeMs = null, series = false } = {}) {
+  if (cfg.nativeSubtitles === 'off' || !candidates.length) return null;
+  const cands = candidates.map((s, i) => ({ url: s.url, meta: s, order: i, fp: fingerprint(s, ctx) }));
+  const accepted = cands.filter((c) => !c.fp.reject).sort(byRank);
+  if (!accepted.length) return null;
+  const top = accepted.slice(0, 3);
+  const legacyEncoding = legacyEncodingFor(cfg.targetLang);
+  await withBudget(
+    Promise.allSettled(top.map(async (c) => {
+      c.cues = await downloadCues(c.url, { timeout: 6000, legacyEncoding });
+    })),
+    1800,
+  );
+  for (const c of top) {
+    if (!c.cues || c.cues.length < 20) { c.reject = 'too few lines (forced or broken file)'; continue; }
+    const end = c.cues.reduce((m, x) => Math.max(m, x.end), 0);
+    c.length = lengthVerdict({ count: c.cues.length, end }, { refEnd, runtimeMs, series });
+    if (c.length.partial) c.reject = c.length.reason;
+  }
+  const pool = top.filter((c) => !c.reject);
+  const best = (pool.length ? pool : top).sort(byRank)[0];
+  if (!best) return null;
+  const verified = !best.reject && Boolean(best.fp.hash || best.fp.score >= 40 || (best.length && best.length.ok === true));
+  const quality = best.reject ? 'unverified' : best.fp.hash ? 'hash' : best.fp.score >= 40 ? 'release' : best.length && best.length.ok ? 'length' : 'unverified';
+  const why =
+    best.reject ||
+    (best.fp.hash ? 'hash match' : best.fp.score >= 40 ? 'release match' : best.length && best.length.ok ? `length ok (${best.length.basis})` : 'found, not confirmed to match this release');
+  return { url: best.url, file: best.meta.subtitleFileName || best.url, verified, quality, why };
 }
 
 const withBudget = (promise, ms) => Promise.race([promise, new Promise((r) => setTimeout(() => r(undefined), ms))]);
@@ -63,15 +108,20 @@ const fmtMin = (ms) => (ms ? `${Math.round(ms / 60000)} min` : null);
  */
 async function selectSubtitles(cfg, type, id, extra = '', opts = {}) {
   const ctx = matchContext(type, id, extra);
-  const { list, hasPreferred } = await fetchSourceSubs(cfg, type, id, extra, ctx);
+  const { list, native, hasPreferred } = await fetchSourceSubs(cfg, type, id, extra, ctx);
   const report = {
     video: { type, id, filename: ctx.filename || null, hash: Boolean(ctx.videoHash), release: ctx.release ? { group: ctx.release.group, source: ctx.release.source, edition: ctx.release.edition } : null },
     runtime: null,
     candidates: [],
     hasPreferred,
+    native: null,
     decision: null,
   };
-  if (!list.length) return { tracks: [], report };
+  if (!list.length) {
+    const runtimeMs = (await withBudget(expectedRuntime(ctx), 400)) || null;
+    report.native = await pickNative(cfg, native, ctx, { runtimeMs, series: type === 'series' });
+    return { tracks: [], report };
+  }
 
   const cands = list.map((s, i) => ({ url: s.url, meta: s, order: i, fp: fingerprint(s, ctx) }));
   for (const c of cands) if (c.fp.fps) rememberFps(c.url, c.fp.fps);
@@ -82,6 +132,8 @@ async function selectSubtitles(cfg, type, id, extra = '', opts = {}) {
     const ready = order.slice(0, 3).findIndex((c) => translationState(c.url, cfg) !== 'none');
     if (ready > 0) order.unshift(order.splice(ready, 1)[0]);
     report.decision = { mode: 'off', chosen: order[0].meta.subtitleFileName || order[0].url };
+    const runtimeMs = (await withBudget(expectedRuntime(ctx), 400)) || null;
+    report.native = await pickNative(cfg, native, ctx, { runtimeMs, series: type === 'series' });
     return { tracks: order.slice(0, cfg.maxCandidates).map((c) => ({ src: c.url, ref: null, q: 'unverified' })), report };
   }
 
@@ -106,6 +158,7 @@ async function selectSubtitles(cfg, type, id, extra = '', opts = {}) {
   }
   const valid = top.filter((c) => c.prof && !c.reject);
   const reference = valid.find((c) => c.fp.hash) || valid.find((c) => c.fp.score >= 40) || null;
+  report.native = await pickNative(cfg, native, ctx, { refEnd: reference ? reference.prof.end : null, runtimeMs, series: type === 'series' });
 
   // Length check: against the reference when there is one, otherwise against the runtime.
   for (const c of valid) {

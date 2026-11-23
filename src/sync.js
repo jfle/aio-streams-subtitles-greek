@@ -15,7 +15,7 @@
 // Stremio never gives subtitle addons the video or its embedded tracks, so the reference is always the
 // English subtitle that best matches the release (ideally an OpenSubtitles hash match).
 
-const { decodeBuffer, parseSubtitles } = require('./subtitles');
+const { decodeBuffer, legacyEncodingFor, parseSubtitles } = require('./subtitles');
 
 // ---------------------------------------------------------------------------------------------------
 // Downloads (shared with the translator, so a subtitle is fetched once)
@@ -41,7 +41,7 @@ function downloadCues(url, opts = {}) {
     if (!res.ok) throw new Error(`Could not download source subtitle (HTTP ${res.status})`);
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length > 5 * 1024 * 1024) throw new Error('Source subtitle is too large');
-    return parseSubtitles(decodeBuffer(buf), { fps: opts.fps });
+    return parseSubtitles(decodeBuffer(buf, opts.legacyEncoding), { fps: opts.fps });
   })();
   downloads.set(key, { at: now, promise });
   promise.catch(() => downloads.delete(key));

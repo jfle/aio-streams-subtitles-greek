@@ -171,6 +171,14 @@
       <label class="check"><input type="checkbox" id="prefetchNext"> <span>While you watch a series, translate the next episode in the background<div class="hint">The next episode then starts fully in Greek.</div></span></label>
       <label class="check"><input type="checkbox" id="autoSync"> <span>Check that the subtitle matches your video, and fix its timing automatically<div class="hint">Matches the release (OpenSubtitles hash, release group, source, edition), rejects wrong types (CD parts, forced-only, wrong episode, not English), checks the length, detects frame-rate differences and aligns timing to the best-matching English subtitle.</div></span></label>
       <label class="check"><input type="checkbox" id="syncNotes"> <span>Show a short note at the start when the timing was corrected or couldn't be verified<div class="hint">If a subtitle is still off, use the player's own control: subtitles menu (CC) → Delay.</div></span></label>
+
+      <label for="nativeSubtitles">Real subtitles already in your language</label>
+      <select id="nativeSubtitles">
+        <option value="auto">Use one when it's verified to match, AI translation as backup (recommended)</option>
+        <option value="both">Always list both, so I choose in the player</option>
+        <option value="off">Ignore them, always use AI translation</option>
+      </select>
+      <div class="hint">OpenSubtitles (or any source above) sometimes already has a subtitle in your chosen language — usually better than a translation when it's a real match. "Verified" means the same checks as above confirm it fits this release and length; an unverified match is offered only when you choose "Always list both".</div>
       <label class="check"><input type="checkbox" id="showOriginalWhilePending"> <span>While a translation is still running, show the remaining lines in English (italics)</span></label>
     </section>
 
@@ -240,7 +248,7 @@
   const cfg = B.config || {};
   const defaults = {
     provider: 'openai', targetLang: 'ell', sources: ['https://opensubtitles-v3.strem.io'], maxCandidates: 1,
-    autoTranslate: true, batchSize: 0, concurrency: 0, earlyStart: true, autoSync: true, syncNotes: true, temperature: 0.3, showOriginalWhilePending: true, disableThinking: true,
+    autoTranslate: true, batchSize: 0, concurrency: 0, earlyStart: true, autoSync: true, syncNotes: true, nativeSubtitles: 'auto', temperature: 0.3, showOriginalWhilePending: true, disableThinking: true,
     prefetchNext: true, instructions: '', credId: ''
   };
   Object.assign(defaults, B.defaults);
@@ -348,6 +356,7 @@
   $('earlyStart').checked = c.earlyStart !== false;
   $('autoSync').checked = c.autoSync !== false;
   $('syncNotes').checked = c.syncNotes !== false;
+  $('nativeSubtitles').value = c.nativeSubtitles || 'auto';
   $('gptRedirect').textContent = B.chatgptRedirect;
   $('prioritySources').value = (c.prioritySources || []).join('\n');
   $('localBaseUrl').value = c.localBaseUrl || '';
@@ -375,6 +384,7 @@
       earlyStart: $('earlyStart').checked,
       autoSync: $('autoSync').checked,
       syncNotes: $('syncNotes').checked,
+      nativeSubtitles: $('nativeSubtitles').value,
       credId,
       prioritySources: $('prioritySources').value,
       localBaseUrl: $('localBaseUrl').value.trim(),

@@ -8,7 +8,7 @@ const path = require('path');
 
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'aigreeksubs-unit-'));
 const { normalizeConfig, encodeConfig, decodeConfig, effectiveLimits, sign } = require('../src/config');
-const { decodeBuffer, parseSubtitles, toSrt } = require('../src/subtitles');
+const { decodeBuffer, legacyEncodingFor, parseSubtitles, toSrt } = require('../src/subtitles');
 const { renderJob, openingReady } = require('../src/translator');
 
 test.after(() => fs.rmSync(process.env.DATA_DIR, { recursive: true, force: true }));
@@ -22,6 +22,10 @@ test('config: defaults and normalisation', () => {
   assert.deepEqual(c.sources, ['https://example.com']);
   assert.equal(c.autoTranslate, true);
   assert.equal(c.earlyStart, true);
+  assert.equal(c.nativeSubtitles, 'auto');
+  assert.equal(normalizeConfig({ nativeSubtitles: 'both' }).nativeSubtitles, 'both');
+  assert.equal(normalizeConfig({ nativeSubtitles: 'off' }).nativeSubtitles, 'off');
+  assert.equal(normalizeConfig({ nativeSubtitles: 'bogus' }).nativeSubtitles, 'auto');
 });
 
 test('config: encrypted token round-trip, tamper detection, defaults not stored', () => {
@@ -74,6 +78,23 @@ test('subtitles: decodes UTF-16 and Windows-1252 files', () => {
   assert.equal(decodeBuffer(utf16), text);
   const cp1252 = Buffer.from(text.replace('é', 'é'), 'latin1');
   assert.equal(decodeBuffer(cp1252), text);
+});
+
+test('subtitles: legacy (non-UTF-8) files use the target script\'s own codepage, not always Windows-1252', () => {
+  assert.equal(legacyEncodingFor('ell'), 'windows-1253');
+  assert.equal(legacyEncodingFor('rus'), 'windows-1251');
+  assert.equal(legacyEncodingFor('tur'), 'windows-1254');
+  assert.equal(legacyEncodingFor('fre'), 'windows-1252');
+  assert.equal(legacyEncodingFor('unknown-code'), 'windows-1252');
+
+  // A non-UTF-8 byte sequence that decodes to different (and both valid) text under each codepage —
+  // confirms decodeBuffer actually uses the codepage it's given, not just that the names differ.
+  const bytes = Buffer.from([0xe4, 0xe5, 0xed]); // "δεν" in Windows-1253; different Latin letters in -1252
+  const asGreek = new TextDecoder('windows-1253').decode(bytes);
+  const asWestern = new TextDecoder('windows-1252').decode(bytes);
+  assert.notEqual(asGreek, asWestern);
+  assert.equal(decodeBuffer(bytes, legacyEncodingFor('ell')), asGreek);
+  assert.equal(decodeBuffer(bytes, legacyEncodingFor('fre')), asWestern);
 });
 
 test('render: partial job shows Greek, then tagged English with a reload hint', () => {

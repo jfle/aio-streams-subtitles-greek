@@ -8,8 +8,8 @@ const { PROVIDERS, LANGUAGES, listModels } = require('./src/providers');
 const { DEFAULTS, normalizeConfig, encodeConfig, decodeConfig, sign, b64url } = require('./src/config');
 const { getOrStartJob, renderJob, translateLines, status, openingReady, etaMs } = require('./src/translator');
 const { selectSubtitles } = require('./src/select');
-const { alignmentFor, isNoop, retimeCues, describeFix } = require('./src/sync');
-const { parseSubtitles, toSrt } = require('./src/subtitles');
+const { alignmentFor, isNoop, retimeCues, describeFix, downloadCues } = require('./src/sync');
+const { legacyEncodingFor, parseSubtitles, toSrt } = require('./src/subtitles');
 const auth = require('./src/auth');
 
 const PORT = parseInt(process.env.PORT || '7000', 10);
@@ -47,6 +47,7 @@ function manifest(cfg, base) {
     background: `${base}/background.png`,
     description:
       `Translates English subtitles to ${lang} with AI` +
+      (cfg && cfg.nativeSubtitles !== 'off' ? `, using a real ${lang} subtitle instead when one is found` : '') +
       (cfg ? ` (${PROVIDERS[cfg.provider].label} · ${cfg.model}).` : '. Configure your AI provider to start.'),
     // The (always empty) stream resource only tells the addon which title was opened, so translation
     // can start while the viewer is still picking a stream.
@@ -130,8 +131,9 @@ async function handleStream(req, res, token, type, id) {
   if (earlyStarted.has(key) && Date.now() - earlyStarted.get(key) < 600e3) return;
   earlyStarted.set(key, Date.now());
   try {
-    const { tracks } = await selectSubtitles(cfg, type, id, '', { budgetMs: 5000 });
-    if (!tracks[0]) return;
+    const { tracks, report } = await selectSubtitles(cfg, type, id, '', { budgetMs: 5000 });
+    // A verified real subtitle will be served instead of the AI one — no need to translate ahead of time.
+    if (!tracks[0] || (cfg.nativeSubtitles === 'auto' && report.native && report.native.verified)) return;
     const job = getOrStartJob(tracks[0].src, cfg);
     job.lastRequested = Math.max(job.lastRequested || 0, Date.now() - 1800e3);
     console.log(`[early] ${type} ${id} -> ${job.key} (${job.status})`);
@@ -144,15 +146,19 @@ async function handleStream(req, res, token, type, id) {
 function trackPayload(t) {
   return t.ref || t.q !== 'unverified' ? b64url(JSON.stringify({ s: t.src, r: t.ref || undefined, q: t.q })) : b64url(t.src);
 }
+// A real (non-AI) subtitle in the target language: served as-is, never sent to the translator.
+function nativePayload(url) {
+  return b64url(JSON.stringify({ s: url, n: true }));
+}
 function readPayload(src) {
   const raw = Buffer.from(src, 'base64url').toString('utf8');
   if (raw.startsWith('{')) {
     try {
       const p = JSON.parse(raw);
-      return { srcUrl: p.s, refUrl: p.r || null, quality: p.q || 'unverified' };
+      return { srcUrl: p.s, refUrl: p.r || null, quality: p.q || 'unverified', native: Boolean(p.n) };
     } catch { /* fall through */ }
   }
-  return { srcUrl: raw, refUrl: null, quality: 'unverified' };
+  return { srcUrl: raw, refUrl: null, quality: 'unverified', native: false };
 }
 
 async function handleSubtitles(req, res, token, type, id, extra) {
@@ -160,23 +166,42 @@ async function handleSubtitles(req, res, token, type, id, extra) {
   if (!cfg) return send(res, 200, { subtitles: [] });
   const { tracks, report } = await selectSubtitles(cfg, type, id, extra);
   const base = baseUrl(req);
-  const subtitles = tracks.map((t, i) => {
-    const src = trackPayload(t);
-    return {
-      id: `ai-${cfg.targetLang}-${i + 1}-${sign(src).slice(0, 8)}`,
-      url: `${base}/${token}/t/${src}/${sign(src)}.srt`,
-      lang: cfg.targetLang,
-    };
-  });
-  // Pre-translate the chosen English subtitle as soon as playback starts.
+  const langName = LANGUAGES[cfg.targetLang] || cfg.targetLang;
+  const link = (src) => ({ src, url: `${base}/${token}/t/${src}/${sign(src)}.srt` });
+
+  const aiEntries = tracks.map((t) => ({ ...link(trackPayload(t)), lang: cfg.targetLang }));
+  const native = report.native;
+  // auto: a verified real subtitle replaces the AI one as the default pick, which still stays available
+  // as a backup track. both: the real subtitle (verified or not) is listed next to the AI one so the
+  // viewer can pick either, every time, in the player's subtitle menu.
+  const useNativePrimary = Boolean(native && cfg.nativeSubtitles === 'auto' && native.verified);
+  const listNativeAlongside = Boolean(native && cfg.nativeSubtitles === 'both');
+  let entries = aiEntries;
+  if (useNativePrimary) {
+    entries = [{ ...link(nativePayload(native.url)), lang: cfg.targetLang }, ...aiEntries.map((e) => ({ ...e, lang: `${langName} (AI)` }))];
+  } else if (listNativeAlongside) {
+    entries = [...aiEntries, { ...link(nativePayload(native.url)), lang: `${langName} (original${native.verified ? '' : ', unverified'})` }];
+  } else if (!entries.length && native && cfg.nativeSubtitles !== 'off') {
+    // No English subtitle could be found to translate at all: offer the real one anyway, even unverified.
+    entries = [{ ...link(nativePayload(native.url)), lang: `${langName} (original${native.verified ? '' : ', unverified'})` }];
+  }
+  const subtitles = entries.map((e, i) => ({
+    id: `sub-${cfg.targetLang}-${i + 1}-${sign(e.src).slice(0, 8)}`,
+    url: e.url,
+    lang: e.lang,
+  }));
+
+  // Pre-translate the chosen English subtitle as soon as playback starts — not needed when a verified
+  // real subtitle is already the default pick.
   let current = null;
-  if (cfg.autoTranslate && tracks[0] && !report.hasPreferred) {
+  if (cfg.autoTranslate && tracks[0] && !report.hasPreferred && !useNativePrimary) {
     const job = (current = getOrStartJob(tracks[0].src, cfg));
     // Ranks above older, abandoned jobs but below any track the user actually selects.
     job.lastRequested = Math.max(job.lastRequested || 0, Date.now() - 3600e3);
   }
   const d = report.decision || {};
-  console.log(`[subs] ${type} ${decodeURIComponent(id)}: ${tracks.length} track(s)${report.hasPreferred ? " · on demand (higher-priority subtitle available)" : ""}${d.chosen ? ` · ${d.chosen} (${d.why})` : ''}${d.reuse ? ` · reusing ${d.reuse.from} (${d.reuse.fix})` : ''}`);
+  const nativeNote = native ? ` · real subtitle: ${native.file} (${native.quality} — ${native.why})${useNativePrimary ? ' [used as default]' : listNativeAlongside || entries.some((e) => e.lang.includes('original')) ? ' [listed]' : ' [not used]'}` : '';
+  console.log(`[subs] ${type} ${decodeURIComponent(id)}: ${subtitles.length} track(s)${report.hasPreferred ? " · on demand (higher-priority subtitle available)" : ""}${nativeNote}${d.chosen ? ` · ${d.chosen} (${d.why})` : ''}${d.reuse ? ` · reusing ${d.reuse.from} (${d.reuse.fix})` : ''}`);
   send(res, 200, { subtitles, cacheMaxAge: 60 }, undefined, { 'Cache-Control': 'max-age=60' });
   // Start the next episode only after this one is translated, so it never takes LM Studio slots from it.
   if (cfg.prefetchNext && !cfg.prioritySources.length && type === 'series') {
@@ -215,7 +240,17 @@ async function prefetchNextEpisode(cfg, id) {
 async function handleTranslation(req, res, token, src, sig) {
   const cfg = decodeConfig(token);
   if (!cfg || sign(src) !== sig) return send(res, 403, 'Forbidden', 'text/plain');
-  const { srcUrl, refUrl, quality } = readPayload(src);
+  const { srcUrl, refUrl, quality, native } = readPayload(src);
+  if (native) {
+    // A real subtitle in the target language: no AI involved, just fetched, decoded and re-serialised.
+    try {
+      const cues = await downloadCues(srcUrl, { timeout: 15000, legacyEncoding: legacyEncodingFor(cfg.targetLang) });
+      return send(res, 200, toSrt(cues), 'application/x-subrip; charset=utf-8', { 'Cache-Control': 'public, max-age=86400' });
+    } catch (e) {
+      console.error(`[native] ${srcUrl}: ${e.message}`);
+      return send(res, 502, 'Could not fetch the subtitle', 'text/plain');
+    }
+  }
   const job = getOrStartJob(srcUrl, cfg);
   job.lastRequested = Date.now(); // the track being watched gets the provider's slots first
   // Stremio's streaming server gives up after ~10 s, so answer well before that: return as soon as the

@@ -122,3 +122,50 @@ test('length groups that differ by a frame-rate ratio make the choice unverified
   assert.match(majority.decision.why, /length agrees with 1 other/);
   assert.doesNotMatch(majority.decision.why, /frame-rate ratio/, 'a clear majority (2 vs 1) is trusted');
 });
+
+test('real subtitles in the target language (cfg.nativeSubtitles)', async () => {
+  // A verified match (same release, hash match) becomes the default pick; the AI track is still listed
+  // as a backup, and fetching it does NOT require translating the real one.
+  mock.state.listings.tt0000090 = [
+    { file: '-eng', release: 'Show.2020.1080p.WEB-DL.H264-GOOD', group: 'GOOD', m: 'h', lang: 'eng' },
+    { file: '-ell', release: 'Show.2020.1080p.WEB-DL.H264-GOOD', group: 'GOOD', m: 'h', lang: 'ell' },
+  ];
+  let subs = (await getJson(`${addon.base}/${token}/subtitles/movie/tt0000090.json`)).body.subtitles;
+  assert.equal(subs.length, 2, 'the real subtitle plus an AI backup');
+  assert.equal(subs[0].lang, 'ell', 'the verified real subtitle is the default pick');
+  assert.match(subs[1].lang, /\(AI\)/, 'the AI track is clearly labelled as the backup');
+  let p0 = payloadOf(subs[0].url);
+  assert.equal(p0.n, true);
+  assert.match(p0.s, /tt0000090-ell\.srt$/);
+  // Fetching the real subtitle serves it directly — no translation job is started for it.
+  const served = await (await fetch(subs[0].url)).text();
+  assert.match(served, /Line 0: /, 'served as-is, not an AI translation');
+  const statusAfter = (await getJson(`${addon.base}/status`)).body.jobs;
+  assert.ok(!statusAfter.some((j) => String(j.key || '').includes('tt0000090-ell')), 'no job queued for the real subtitle');
+
+  const report = (await getJson(`${addon.base}/${token}/report/movie/tt0000090.json`)).body;
+  assert.equal(report.native.quality, 'hash');
+  assert.equal(report.native.verified, true);
+
+  // Not a confirmed match (forced/partial-only file, too few lines to trust): AI stays the only track.
+  mock.state.listings.tt0000091 = [
+    { file: '-eng2', release: 'Movie.2020.1080p.WEB-DL.H264-GOOD', group: 'GOOD', m: 'h', lang: 'eng' },
+    { file: '-forced', release: 'Random.Unrelated.Name', lang: 'ell' },
+  ];
+  subs = (await getJson(`${addon.base}/${token}/subtitles/movie/tt0000091.json`)).body.subtitles;
+  assert.equal(subs.length, 1, 'an unverified real subtitle is not used in auto mode');
+  assert.equal(subs[0].lang, 'ell');
+
+  // "Always list both": the same unverified real subtitle is now offered too, clearly marked unverified.
+  const both = await api(addon.base, 'encode', { config: { provider: 'custom', baseUrl: `${mock.base}/v1`, model: 'm', sources: [mock.base], nativeSubtitles: 'both' } });
+  subs = (await getJson(`${addon.base}/${both.body.token}/subtitles/movie/tt0000091.json`)).body.subtitles;
+  assert.equal(subs.length, 2);
+  assert.match(subs[1].lang, /original, unverified/);
+
+  // "Ignore them": the real subtitle is never offered, even when it's a perfect hash match.
+  const off = await api(addon.base, 'encode', { config: { provider: 'custom', baseUrl: `${mock.base}/v1`, model: 'm', sources: [mock.base], nativeSubtitles: 'off' } });
+  subs = (await getJson(`${addon.base}/${off.body.token}/subtitles/movie/tt0000090.json`)).body.subtitles;
+  assert.equal(subs.length, 1);
+  assert.equal(subs[0].lang, 'ell');
+  assert.equal(payloadOf(subs[0].url).n, undefined);
+});

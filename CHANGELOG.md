@@ -4,6 +4,8 @@ All notable changes to this project. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+- Add a real-subtitle-or-AI choice: when a verified subtitle already exists in the target language, offer it instead of (or alongside) the AI translation. New `nativeSubtitles` setting (`auto` | `both` | `off`, default `auto`) on the configure page. In `auto`, a verified real subtitle becomes the primary track with the AI translation kept as a `(AI)`-labeled backup; in `both`, the real subtitle is always listed alongside the AI track, labeled unverified when it couldn't be confirmed; in `off`, behavior is unchanged from before this release.
+- Fix legacy (non-UTF-8) subtitle files being decoded with the Western European codepage (Windows-1252) regardless of the target language; each language now uses its own legacy codepage (e.g. Windows-1253 for Greek, Windows-1251 for Russian/Bulgarian/Ukrainian).
 - Add a guided fresh install of AIOStreams, subtitles, and AIOMetadata with Redis through Tailscale Funnel for users behind CGNAT.
 
 - Offer a ready-to-select AIOStreams template for English audio and Greek subtitles on fresh installs. Provide a separate mainstream catalog template for AIOMetadata.

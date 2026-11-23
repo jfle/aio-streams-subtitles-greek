@@ -1,14 +1,37 @@
 'use strict';
 // Subtitle parsing (SRT, WebVTT, ASS/SSA, MicroDVD) and SRT serialisation.
 
-function decodeBuffer(buf) {
+// Non-UTF-8 legacy subtitles use the Windows codepage for their own script, not always Windows-1252
+// (e.g. a Greek .srt that predates UTF-8 is Windows-1253; Western-European text stays Windows-1252).
+const LEGACY_CODEPAGES = {
+  ell: 'windows-1253',
+  bul: 'windows-1251',
+  rus: 'windows-1251',
+  ukr: 'windows-1251',
+  scc: 'windows-1250',
+  hrv: 'windows-1250',
+  cze: 'windows-1250',
+  hun: 'windows-1250',
+  pol: 'windows-1250',
+  rum: 'windows-1250',
+  tur: 'windows-1254',
+};
+function legacyEncodingFor(lang) {
+  return LEGACY_CODEPAGES[lang] || 'windows-1252';
+}
+
+function decodeBuffer(buf, legacyEncoding = 'windows-1252') {
   if (buf[0] === 0xff && buf[1] === 0xfe) return new TextDecoder('utf-16le').decode(buf.subarray(2));
   if (buf[0] === 0xfe && buf[1] === 0xff) return new TextDecoder('utf-16be').decode(buf.subarray(2));
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(buf).replace(/^﻿/, '');
   } catch {
-    // Older English subtitles are frequently Windows-1252 encoded.
-    return new TextDecoder('windows-1252').decode(buf);
+    // Older subtitles in the target script are frequently in that script's own legacy codepage.
+    try {
+      return new TextDecoder(legacyEncoding).decode(buf);
+    } catch {
+      return new TextDecoder('windows-1252').decode(buf);
+    }
   }
 }
 
@@ -118,4 +141,4 @@ function toSrt(cues) {
   return cues.map((c, i) => `${i + 1}\n${fmt(c.start)} --> ${fmt(c.end)}\n${c.text}\n`).join('\n');
 }
 
-module.exports = { decodeBuffer, parseSubtitles, detectFormat, toSrt };
+module.exports = { decodeBuffer, legacyEncodingFor, parseSubtitles, detectFormat, toSrt };

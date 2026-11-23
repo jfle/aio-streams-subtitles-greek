@@ -42,6 +42,9 @@ const DEFAULTS = {
   earlyStart: true,
   autoSync: true, // fingerprint / length / frame-rate / alignment checks (src/sync.js)
   syncNotes: true, // short on-screen note when timing was corrected or couldn't be verified
+  // off = always translate with AI; auto = use a verified real subtitle when one is found, AI as a
+  // backup track; both = always list the real subtitle next to the AI one so you pick in the player.
+  nativeSubtitles: 'auto',
   credId: '',
   instructions: '',
 };
@@ -101,6 +104,7 @@ function normalizeConfig(input = {}) {
   c.earlyStart = c.earlyStart === true || c.earlyStart === 'true' || c.earlyStart === 'on';
   c.autoSync = c.autoSync === true || c.autoSync === 'true' || c.autoSync === 'on';
   c.syncNotes = c.syncNotes === true || c.syncNotes === 'true' || c.syncNotes === 'on';
+  if (!['off', 'auto', 'both'].includes(c.nativeSubtitles)) c.nativeSubtitles = DEFAULTS.nativeSubtitles;
   c.credId = /^[\w-]{16,64}$/.test(String(c.credId || '')) ? String(c.credId) : '';
   if (!PROVIDERS[c.provider].auth) c.credId = '';
   c.instructions = String(c.instructions || '').slice(0, 1000);
