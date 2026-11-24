@@ -4,6 +4,24 @@ All notable changes to this project. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [3.0.0] — 2026-11-24
+
+Major release: subtitles that are in sync with the stream, real subtitles first.
+
+### Changed
+- **Real subtitles first, AI second.** OpenSubtitles v3 is always asked first. A real subtitle in your language is now the default track not only when it is a verified match for the release, but also when it was retimed successfully against an English subtitle that is (hash, release or length match). The AI translation stays listed as a backup. If the retime is still running when Stremio asks, the real subtitle is listed next to the AI track.
+- **Real subtitles are retimed** before Stremio gets them. Until 2.x they were served exactly as downloaded, so a subtitle made for another release (another delay, a 25 fps PAL timing, a TV cut with ad breaks) stayed out of sync in every player. This was the cause of "sync never works" on Android TV players.
+- **Local model: one check per session.** Before using the free local model (LM Studio / Krikri), the addon does one quick TCP check of its port, then confirms that the model is loaded. The answer is remembered (online 20 min, offline 3 min) so a PC that is off or asleep no longer costs a timeout on every batch. Translations go straight to the cloud providers in your order. A local call that fails outright marks it offline until the next check.
+- Candidate ranking: subtitles timed for cinema recordings (CAM/TS/TC) are pushed down unless the video is one too, and 25 fps (PAL) timings are pushed down for WEB/BluRay videos.
+
+### Added
+- **Split-aware timing alignment** (`src/splitsync.js`, alass-style), independent of language: compares when lines are on screen instead of what they say, so a Greek subtitle can be retimed against an English one. It finds a constant delay, any frame-rate stretch (23.976 / 24 / 25 / 29.97 / 30 fps, using the subtitle's own fps from OpenSubtitles as a hint) and *different cuts*: each part of the film gets its own delay (FFT cross-correlation + dynamic programming with a split penalty; every part has to prove itself against chance, so a wrong film is never "fixed"). Typical run time is 0.1–0.2 s per subtitle.
+- Tablet AIOStreams template (`templates/aiostreams-tablet-greek.json`), offered first on fresh installs: 1080p first, WEB-DL / BluRay first, no CAM/TS/SCR/TC, no Dolby Vision profile 5 ("DV Only"), HEVC/H.264 before AV1.
+- Tests for constant delay, PAL speed-up, ad-break cuts, wrong film, cross-language retime end to end, and the offline local model.
+
+### Fixed
+- The subtitle download cache ignored the text encoding, so a legacy-encoded Greek file fetched first for alignment could be served with the wrong codepage.
+
 ## [2.1.1] — 2026-11-23
 
 - Keep persistent logs on the data disk in `DATA_DIR/logs`: a timestamped daily log of every line (kept 90 days) and a JSON-lines history of every translation job — listing decision, start, progress, done/error with cue and failure counts, local-model vs cloud batches, retries and cache hits (kept 400 days). The system journal alone was not enough on Armbian/Orange Pi, where it lives in a small RAM disk that fills up and is lost on reboot. API keys and bearer tokens are masked.

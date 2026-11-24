@@ -1,0 +1,38 @@
+{
+  "metadata": {
+    "id": "jfle.tablet-greek-stremio",
+    "name": "Tablet (11\") — best picture with Greek subtitles that fit",
+    "description": "Tuned for an 11-inch tablet (e.g. Galaxy Tab S10 Lite, 2112×1320 LCD, no HDR, no AV1 decoder): 1080p first, digital WEB-DL / BluRay sources first (most subtitles are timed to them), SDR before HDR, HEVC/H.264 before AV1, no cinema recordings and no Dolby Vision profile 5 (DV-only shows green/purple on non-DV screens).",
+    "author": "jfle",
+    "category": "Playback",
+    "source": "external",
+    "version": "3.0.0",
+    "services": [],
+    "setToSaveInstallMenu": false
+  },
+  "config": {
+    "preferredLanguages": ["English"],
+    "preferredSubtitles": ["Greek"],
+    "excludedResolutions": ["360p", "240p", "144p"],
+    "preferredResolutions": ["1080p", "1440p", "720p", "2160p", "576p", "480p", "Unknown"],
+    "excludedQualities": ["CAM", "SCR", "TS", "TC"],
+    "preferredQualities": ["WEB-DL", "BluRay", "WEBRip", "BluRay REMUX", "HDRip", "HC HD-Rip", "HDTV", "DVDRip", "DVD REMUX"],
+    "excludedVisualTags": ["3D", "AI", "Upscaled", "DV Only"],
+    "excludedEncodes": ["XviD", "DivX"],
+    "preferredEncodes": ["HEVC", "AVC", "AV1"],
+    "preferredAudioTags": ["DD+", "DD", "AAC", "Atmos"],
+    "sortCriteria": {
+      "global": [
+        { "key": "cached", "direction": "desc" },
+        { "key": "language", "direction": "desc" },
+        { "key": "resolution", "direction": "desc" },
+        { "key": "quality", "direction": "desc" },
+        { "key": "subtitle", "direction": "desc" },
+        { "key": "encode", "direction": "desc" },
+        { "key": "audioTag", "direction": "desc" },
+        { "key": "size", "direction": "desc" }
+      ]
+    },
+    "enableSeadex": false
+  }
+}

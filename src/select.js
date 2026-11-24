@@ -65,7 +65,7 @@ async function fetchSourceSubs(cfg, type, id, extra, ctx) {
 
 // Checks whether a subtitle already in the target language is good enough to use as-is (same checks as
 // the English pipeline: release fingerprint, then length against the reference or the runtime).
-async function pickNative(cfg, candidates, ctx, { refEnd = null, runtimeMs = null, series = false } = {}) {
+async function pickNative(cfg, candidates, ctx, { refEnd = null, runtimeMs = null, series = false, ref = null } = {}) {
   if (cfg.nativeSubtitles === 'off' || !candidates.length) return null;
   const cands = candidates.map((s, i) => ({ url: s.url, meta: s, order: i, fp: fingerprint(s, ctx) }));
   const accepted = cands.filter((c) => !c.fp.reject).sort(byRank);
@@ -92,7 +92,13 @@ async function pickNative(cfg, candidates, ctx, { refEnd = null, runtimeMs = nul
   const why =
     best.reject ||
     (best.fp.hash ? 'hash match' : best.fp.score >= 40 ? 'release match' : best.length && best.length.ok ? `length ok (${best.length.basis})` : 'found, not confirmed to match this release');
-  return { url: best.url, file: best.meta.subtitleFileName || best.url, verified, quality, why };
+  // Unless it is a hash match, retime it against the English subtitle that best fits this video (when known):
+  // fixes delays, PAL 25 fps timings and TV cuts that a real subtitle from another release would have.
+  const timingRef = !best.fp.hash && ref && ref.url !== best.url ? ref : null;
+  return {
+    url: best.url, file: best.meta.subtitleFileName || best.url, verified, quality, why, rejected: Boolean(best.reject),
+    fps: best.fp.fps || null, ref: timingRef ? timingRef.url : null, refFps: timingRef ? timingRef.fps : null, refQuality: timingRef ? timingRef.q : null,
+  };
 }
 
 const withBudget = (promise, ms) => Promise.race([promise, new Promise((r) => setTimeout(() => r(undefined), ms))]);
@@ -158,7 +164,6 @@ async function selectSubtitles(cfg, type, id, extra = '', opts = {}) {
   }
   const valid = top.filter((c) => c.prof && !c.reject);
   const reference = valid.find((c) => c.fp.hash) || valid.find((c) => c.fp.score >= 40) || null;
-  report.native = await pickNative(cfg, native, ctx, { refEnd: reference ? reference.prof.end : null, runtimeMs, series: type === 'series' });
 
   // Length check: against the reference when there is one, otherwise against the runtime.
   for (const c of valid) {
@@ -187,6 +192,7 @@ async function selectSubtitles(cfg, type, id, extra = '', opts = {}) {
     how = 'unverified (downloads too slow)';
   }
   if (!primary) {
+    report.native = await pickNative(cfg, native, ctx, { refEnd: reference ? reference.prof.end : null, runtimeMs, series: type === 'series' });
     report.decision = { chosen: null, why: 'no usable English subtitle' };
     report.candidates = cands.map((c) => describe(c));
     return { tracks: [], report };
@@ -212,6 +218,10 @@ async function selectSubtitles(cfg, type, id, extra = '', opts = {}) {
       how += `; other subtitles differ by a frame-rate ratio (${rivalFps}?) — can't tell which fits without a release match`;
     }
   }
+
+  // The real subtitle in the target language (OpenSubtitles first), retimed to the best English timing we have.
+  const timingRef = q !== 'unverified' && primary.cues ? { url: primary.url, fps: primary.fp.fps, q } : null;
+  report.native = await pickNative(cfg, native, ctx, { refEnd: reference ? reference.prof.end : null, runtimeMs, series: type === 'series', ref: timingRef });
 
   // Reuse an existing translation of another release, retimed to the chosen subtitle.
   let translate = primary;

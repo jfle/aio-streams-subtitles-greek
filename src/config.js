@@ -91,6 +91,8 @@ function normalizeConfig(input = {}) {
   let sources = Array.isArray(c.sources) ? c.sources : String(c.sources || '').split(/[\n,]+/);
   sources = sources.map(normalizeSourceUrl).filter((s) => /^https?:\/\//i.test(s));
   c.sources = sources.length ? [...new Set(sources)] : DEFAULTS.sources;
+  // Real subtitles first: OpenSubtitles v3 is always asked first (then any other source, then AI).
+  c.sources = [...c.sources.filter((u) => /opensubtitles-v3\.strem\.io/i.test(u)), ...c.sources.filter((u) => !/opensubtitles-v3\.strem\.io/i.test(u))];
   c.maxCandidates = clampInt(c.maxCandidates, 1, 10, DEFAULTS.maxCandidates);
   c.batchSize = c.batchSize === '' || +c.batchSize === 0 ? 0 : clampInt(c.batchSize, 5, 150, DEFAULTS.batchSize);
   c.concurrency = c.concurrency === '' || +c.concurrency === 0 ? 0 : clampInt(c.concurrency, 1, 32, DEFAULTS.concurrency);

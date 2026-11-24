@@ -151,15 +151,15 @@ function trackPayload(t) {
   return t.ref || t.q !== 'unverified' ? b64url(JSON.stringify({ s: t.src, r: t.ref || undefined, q: t.q })) : b64url(t.src);
 }
 // A real (non-AI) subtitle in the target language: served as-is, never sent to the translator.
-function nativePayload(url) {
-  return b64url(JSON.stringify({ s: url, n: true }));
+function nativePayload(native) {
+  return b64url(JSON.stringify({ s: native.url, n: true, r: native.ref || undefined, f: native.fps || undefined, rf: native.refFps || undefined }));
 }
 function readPayload(src) {
   const raw = Buffer.from(src, 'base64url').toString('utf8');
   if (raw.startsWith('{')) {
     try {
       const p = JSON.parse(raw);
-      return { srcUrl: p.s, refUrl: p.r || null, quality: p.q || 'unverified', native: Boolean(p.n) };
+      return { srcUrl: p.s, refUrl: p.r || null, quality: p.q || 'unverified', native: Boolean(p.n), srcFps: p.f || null, refFps: p.rf || null };
     } catch { /* fall through */ }
   }
   return { srcUrl: raw, refUrl: null, quality: 'unverified', native: false };
@@ -178,16 +178,27 @@ async function handleSubtitles(req, res, token, type, id, extra) {
   // auto: a verified real subtitle replaces the AI one as the default pick, which still stays available
   // as a backup track. both: the real subtitle (verified or not) is listed next to the AI one so the
   // viewer can pick either, every time, in the player's subtitle menu.
-  const useNativePrimary = Boolean(native && cfg.nativeSubtitles === 'auto' && native.verified);
-  const listNativeAlongside = Boolean(native && cfg.nativeSubtitles === 'both');
+  // Real subtitle first (OpenSubtitles), AI second. A real subtitle is the default when it is verified for this
+  // release, or when it was just retimed successfully against an English subtitle that is (hash / release /
+  // length match). Retiming starts now, so the file is ready when the player asks for it a moment later.
+  let retimed = null;
+  if (native && native.ref && !native.rejected && cfg.autoSync && cfg.nativeSubtitles !== 'off') {
+    const job = alignmentFor(native.url, native.ref, { srcFps: native.fps, refFps: native.refFps });
+    job.catch(() => {});
+    retimed = await Promise.race([job.catch(() => null), new Promise((r) => setTimeout(() => r(undefined), 1800))]);
+  }
+  const retimeOk = Boolean(retimed && retimed.ok && retimed.confidence >= 0.5);
+  const useNativePrimary = Boolean(native && cfg.nativeSubtitles === 'auto' && (native.verified || retimeOk));
+  // Still being retimed (slow source) — offer it next to the AI track rather than not at all.
+  const listNativeAlongside = Boolean(native && (cfg.nativeSubtitles === 'both' || (cfg.nativeSubtitles === 'auto' && !useNativePrimary && retimed === undefined)));
   let entries = aiEntries;
   if (useNativePrimary) {
-    entries = [{ ...link(nativePayload(native.url)), lang: cfg.targetLang }, ...aiEntries.map((e) => ({ ...e, lang: `${langName} (AI)` }))];
+    entries = [{ ...link(nativePayload(native)), lang: cfg.targetLang }, ...aiEntries.map((e) => ({ ...e, lang: `${langName} (AI)` }))];
   } else if (listNativeAlongside) {
-    entries = [...aiEntries, { ...link(nativePayload(native.url)), lang: `${langName} (original${native.verified ? '' : ', unverified'})` }];
+    entries = [...aiEntries, { ...link(nativePayload(native)), lang: `${langName} (original${native.verified ? '' : ', unverified'})` }];
   } else if (!entries.length && native && cfg.nativeSubtitles !== 'off') {
     // No English subtitle could be found to translate at all: offer the real one anyway, even unverified.
-    entries = [{ ...link(nativePayload(native.url)), lang: `${langName} (original${native.verified ? '' : ', unverified'})` }];
+    entries = [{ ...link(nativePayload(native)), lang: `${langName} (original${native.verified ? '' : ', unverified'})` }];
   }
   const subtitles = entries.map((e, i) => ({
     id: `sub-${cfg.targetLang}-${i + 1}-${sign(e.src).slice(0, 8)}`,
@@ -252,11 +263,26 @@ async function prefetchNextEpisode(cfg, id) {
 async function handleTranslation(req, res, token, src, sig) {
   const cfg = decodeConfig(token);
   if (!cfg || sign(src) !== sig) return send(res, 403, 'Forbidden', 'text/plain');
-  const { srcUrl, refUrl, quality, native } = readPayload(src);
+  const { srcUrl, refUrl, quality, native, srcFps, refFps } = readPayload(src);
   if (native) {
-    // A real subtitle in the target language: no AI involved, just fetched, decoded and re-serialised.
+    // A real subtitle in the target language: no AI involved. Retimed to the English reference when there is one.
     try {
-      const cues = await downloadCues(srcUrl, { timeout: 15000, legacyEncoding: legacyEncodingFor(cfg.targetLang) });
+      let cues = await downloadCues(srcUrl, { timeout: 15000, legacyEncoding: legacyEncodingFor(cfg.targetLang), fps: srcFps || undefined });
+      let fixed = '';
+      if (refUrl && cfg.autoSync) {
+        try {
+          const a = await Promise.race([alignmentFor(srcUrl, refUrl, { srcFps, refFps }), new Promise((r) => setTimeout(() => r(null), 6000))]);
+          if (a && a.ok && !isNoop(a)) { cues = retimeCues(cues, a.map); fixed = describeFix(a, cfg.targetLang === 'ell' ? 'el' : 'en'); }
+          console.log(`[native] ${logbook.shortUrl(srcUrl)} → ${a ? (a.ok ? (fixed || 'already in sync') + ` (${a.method}, ${Math.round(a.confidence * 100)}%)` : `not retimed: ${a.reason}`) : 'retime timed out'}`);
+          logbook.jobEvent('real-subtitle', { src: logbook.shortUrl(srcUrl), retimed: Boolean(fixed), fix: fixed || undefined, method: a && a.method, confidence: a && a.ok ? Number(a.confidence.toFixed(2)) : undefined, reason: a && !a.ok ? a.reason : undefined });
+        } catch (e) {
+          console.error(`[native] retime failed: ${e.message}`);
+        }
+      }
+      if (fixed && cfg.syncNotes) {
+        const el = cfg.targetLang === 'ell';
+        cues = [{ start: 500, end: 5000, text: el ? `⏱ Ο συγχρονισμός διορθώθηκε αυτόματα (${fixed})` : `⏱ Timing corrected automatically (${fixed})` }, ...cues].sort((x, y) => x.start - y.start);
+      }
       return send(res, 200, toSrt(cues), 'application/x-subrip; charset=utf-8', { 'Cache-Control': 'public, max-age=86400' });
     } catch (e) {
       console.error(`[native] ${srcUrl}: ${e.message}`);

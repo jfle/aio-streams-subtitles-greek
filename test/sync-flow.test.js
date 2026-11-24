@@ -169,3 +169,24 @@ test('real subtitles in the target language (cfg.nativeSubtitles)', async () => 
   assert.equal(subs[0].lang, 'ell');
   assert.equal(payloadOf(subs[0].url).n, undefined);
 });
+
+test('a real Greek subtitle from another release is retimed before Stremio gets it', async () => {
+  // English hash match = the timing of this video; the Greek file is a real subtitle for another release, 3 s late.
+  mock.state.listings.tt0000092 = [
+    { file: '-irr', release: 'Film.2021.1080p.WEB-DL.H264-GOOD', group: 'GOOD', m: 'h', lang: 'eng' },
+    { file: '-irr-greektext-shift', release: 'Film.2021.720p.HDTV.x264-OTHER', group: 'OTHER', lang: 'ell' },
+  ];
+  const subs = (await getJson(`${addon.base}/${token}/subtitles/movie/tt0000092.json`)).body.subtitles;
+  assert.equal(subs[0].lang, 'ell', 'the retimed real subtitle is the default pick');
+  const p0 = payloadOf(subs[0].url);
+  assert.equal(p0.n, true);
+  assert.match(p0.r, /tt0000092-irr\.srt$/, 'carries the English timing reference');
+  const served = await (await fetch(subs[0].url)).text();
+  const english = await (await fetch(`${mock.base}/files/tt0000092-irr.srt`)).text();
+  const starts = (srt) => [...srt.matchAll(/(\d\d):(\d\d):(\d\d),(\d\d\d) -->/g)].map((m) => ((+m[1] * 60 + +m[2]) * 60 + +m[3]) * 1000 + +m[4]);
+  const g = starts(served).filter((x) => x > 5000);
+  const e = new Set(starts(english));
+  const close = g.filter((x) => [...e].some((y) => Math.abs(x - y) <= 60)).length;
+  assert.ok(close / g.length > 0.95, `${close}/${g.length} lines back on the English timing`);
+  assert.match(served, /Γραμμή/, 'still the real Greek text');
+});

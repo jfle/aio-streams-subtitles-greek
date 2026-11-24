@@ -16,6 +16,7 @@
 // English subtitle that best matches the release (ideally an OpenSubtitles hash match).
 
 const { decodeBuffer, legacyEncodingFor, parseSubtitles } = require('./subtitles');
+const { splitAlign } = require('./splitsync');
 
 // ---------------------------------------------------------------------------------------------------
 // Downloads (shared with the translator, so a subtitle is fetched once)
@@ -33,7 +34,7 @@ function downloadCues(url, opts = {}) {
   const now = Date.now();
   for (const [k, v] of downloads) if (now - v.at > DOWNLOAD_TTL) downloads.delete(k);
   opts = { ...opts, fps: opts.fps || knownFps.get(url) };
-  const key = `${url}|${opts.fps || ''}`;
+  const key = `${url}|${opts.fps || ''}|${opts.legacyEncoding || ''}`;
   const hit = downloads.get(key);
   if (hit) return hit.promise;
   const promise = (async () => {
@@ -152,6 +153,11 @@ function fingerprint(meta, ctx) {
     }
     if (v.repack && rel.repack) score += 3;
   }
+  // Cinema recordings (CAM/TS/TC) are timed to a different, often cut, picture: only right for a CAM video.
+  if (rel.source === 'cam' && !(v && v.source === 'cam')) { score -= 35; reasons.push('timed for a cinema recording (CAM/TS)'); }
+  // A 25 fps subtitle is usually a PAL DVD/TV timing; digital releases run at 23.976/24.
+  const subFps = meta.fpsMilli ? meta.fpsMilli / 1000 : null;
+  if (subFps && v && ['web', 'bluray'].includes(v.source) && Math.abs(subFps - 25) < 0.01 && rel.source !== v.source) { score -= 8; reasons.push('25 fps (PAL) timing'); }
   return { score, hash, reject, reasons, release: rel, fps: meta.fpsMilli ? meta.fpsMilli / 1000 : null };
 }
 
@@ -370,7 +376,7 @@ function timingFit(src, ref) {
  * Finds how to retime `src` so that it matches `ref`.
  * Returns { ok, method, scale, offset, piecewise, anchors, inliers, confidence, maxShift, map(t) }.
  */
-function align(src, ref) {
+function align(src, ref, opts = {}) {
   const fail = (why) => ({ ok: false, reason: why, map: (t) => t, scale: 1, offset: 0 });
   if (!src || !ref || src.length < 10 || ref.length < 10) return fail('not enough lines');
   const anchors = textAnchors(src, ref);
@@ -407,9 +413,19 @@ function align(src, ref) {
     return { ok: true, method: piecewise ? 'text-elastic' : 'text', scale: g.scale, offset: g.offset, piecewise, anchors: pts.length, inliers: fitted, confidence, maxShift: Math.max(...shifts), map };
   }
 
+  // Different wording (another language or translator): compare when lines are on screen instead.
+  // Split-aware, so a TV/DVR cut with ad breaks or an extended scene is retimed part by part.
+  const sa = splitAlign(ref, src, { scaleHint: opts.scaleHint });
+  if (sa.ok && sa.confidence >= 0.5) {
+    const offset = sa.segments.length === 1 ? sa.segments[0].delay : median(sa.segments.map((x) => x.delay));
+    return {
+      ok: true, method: sa.splits ? 'timing-split' : 'timing', scale: sa.scale, offset, piecewise: sa.splits > 0, parts: sa.splits + 1,
+      anchors: 0, inliers: 0, confidence: sa.confidence, maxShift: Math.max(...src.map((c) => Math.abs(sa.map(c.start) - c.start))), map: sa.map,
+    };
+  }
   const t = timingFit(src, ref);
   const confidence = t.matches / minN;
-  if (confidence < 0.5) return fail(`no reliable match (${Math.round(confidence * 100)}% of cue times)`);
+  if (confidence < 0.5) return fail(`no reliable match (${Math.round(Math.max(confidence, sa.confidence || 0) * 100)}% of cue times)`);
   const map = (x) => t.scale * x + t.offset;
   return { ok: true, method: 'timing', scale: t.scale, offset: t.offset, piecewise: false, anchors: 0, inliers: t.matches, confidence, maxShift: Math.max(...src.map((c) => Math.abs(map(c.start) - c.start))), map };
 }
@@ -438,17 +454,18 @@ function describeFix(a, lang = 'en') {
     const s = (a.offset / 1000).toFixed(1);
     parts.push(`${a.offset >= 0 ? '+' : ''}${lang === 'el' ? s.replace('.', ',') : s} ${lang === 'el' ? 'δ' : 's'}`);
   }
-  if (a.piecewise) parts.push(lang === 'el' ? 'διορθώσεις ανά σκηνή' : 'per-scene corrections');
+  if (a.piecewise) parts.push(a.parts ? (lang === 'el' ? `σε ${a.parts} κομμάτια (περικοπές/διαφημίσεις)` : `in ${a.parts} parts (cuts/ad breaks)`) : (lang === 'el' ? 'διορθώσεις ανά σκηνή' : 'per-scene corrections'));
   return parts.join(', ');
 }
 
 const alignCache = new Map();
 async function alignmentFor(srcUrl, refUrl, opts = {}) {
-  const key = `${srcUrl}|${refUrl}`;
+  const key = `${srcUrl}|${refUrl}|${opts.srcFps || ''}|${opts.refFps || ''}`;
   const hit = alignCache.get(key);
   if (hit && Date.now() - hit.at < 6 * 3600e3) return hit.result;
   const [src, ref] = await Promise.all([downloadCues(srcUrl, { fps: opts.srcFps }), downloadCues(refUrl, { fps: opts.refFps })]);
-  const result = align(src, ref);
+  const scaleHint = opts.srcFps && opts.refFps && Math.abs(opts.srcFps / opts.refFps - 1) > 0.0005 ? opts.srcFps / opts.refFps : undefined;
+  const result = align(src, ref, { scaleHint });
   if (alignCache.size > 500) alignCache.clear();
   alignCache.set(key, { at: Date.now(), result });
   return result;

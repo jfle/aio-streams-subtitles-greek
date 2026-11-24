@@ -1,6 +1,6 @@
 {
   "name": "aio-streams-subtitles-greek",
-  "version": "2.1.1",
+  "version": "3.0.0",
   "description": "Stremio addon that translates English subtitles to Greek (or 17 other languages) with the AI you choose: Sign in with ChatGPT or Grok, OpenRouter, API keys, or local LM Studio / Ollama.",
   "main": "server.js",
   "scripts": {

@@ -20,10 +20,17 @@ function makeSrt(lines, variant = '') {
   const map = (t) => (variant.includes('-shift') ? t + 3000 : variant.includes('-fps') ? Math.round((t * 23.976) / 25) : t);
   const n = variant.includes('-cd1') ? Math.floor(lines / 2) : variant.includes('-forced') ? 10 : lines;
   let out = '';
+  // -irr: natural, irregular dialogue rhythm (same for every file of a title) so timing alone can place it;
+  // -greektext: Greek text (no shared lines with the English reference)
+  let t = 1000;
+  let seed = 7;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
   for (let i = 0; i < n; i++) {
-    const t = 1000 + i * 3000;
-    const text = variant.includes('-fr') ? `Ligne ${i} : je ne sais pas quoi dire, mon ami.` : `Line ${i}: ${PHRASES[i % PHRASES.length]}`;
-    out += `${i + 1}\n${fmt(map(t))} --> ${fmt(map(t + 2000))}\n${text}\n\n`;
+    let dur = 2000;
+    if (variant.includes('-irr')) { dur = 900 + Math.floor(rnd() * 3200); } else t = 1000 + i * 3000;
+    const text = variant.includes('-fr') ? `Ligne ${i} : je ne sais pas quoi dire, mon ami.` : variant.includes('-greektext') ? `Γραμμή ${i}: δεν ξέρω τι να πω, φίλε μου.` : `Line ${i}: ${PHRASES[i % PHRASES.length]}`;
+    out += `${i + 1}\n${fmt(map(t))} --> ${fmt(map(t + dur))}\n${text}\n\n`;
+    if (variant.includes('-irr')) t += dur + (rnd() < 0.08 ? 6000 + Math.floor(rnd() * 20000) : 250 + Math.floor(rnd() * 3000));
   }
   return out;
 }

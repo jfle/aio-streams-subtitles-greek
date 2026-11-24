@@ -508,6 +508,49 @@ async function listModels(cfg) {
   return (j.data || j.models || []).map((m) => m.id || m.name).filter(Boolean).sort();
 }
 
+// Is anything listening on the local model's port? A plain TCP connect (no HTTP, ~1 s at most), so a PC that is
+// off or asleep costs one quick check instead of a timeout on every batch.
+const net = require('net');
+function portOpen(baseUrl, timeoutMs = 1200) {
+  let u;
+  try { u = new URL(baseUrl); } catch { return Promise.resolve(false); }
+  const port = parseInt(u.port, 10) || (u.protocol === 'https:' ? 443 : 80);
+  return new Promise((resolve) => {
+    const sock = net.connect({ host: u.hostname, port });
+    const done = (ok) => { sock.destroy(); resolve(ok); };
+    sock.setTimeout(timeoutMs, () => done(false));
+    sock.once('connect', () => done(true));
+    sock.once('error', () => done(false));
+  });
+}
+
+// Per-session flag for the free local model: checked once (port, then the model list) and remembered —
+// 'up' for 20 minutes, 'down' for 3 — so every job in a viewing session uses the same, already known answer.
+const localState = new Map(); // baseUrl|model -> { at, up, why }
+async function localSession(cfg, { force = false } = {}) {
+  const key = `${cfg.baseUrl}|${cfg.model}`;
+  const hit = localState.get(key);
+  if (!force && hit && Date.now() - hit.at < (hit.up ? 20 : 3) * 60e3) return hit;
+  let up = false;
+  let why = '';
+  if (!(await portOpen(cfg.baseUrl))) why = 'port closed (PC off, asleep or LM Studio server not started)';
+  else {
+    try { up = await localModelAvailable(cfg); if (!up) why = `model ${cfg.model} not loaded`; } catch (e) { why = e.message || String(e); }
+  }
+  const state = { at: Date.now(), up, why };
+  if (!hit || hit.up !== up) console.log(`[local] ${cfg.baseUrl} is ${up ? 'online — used first (free)' : `offline — ${why}; using the cloud providers in order`}`);
+  localState.set(key, state);
+  return state;
+}
+
+/** A local call failed outright (connection/HTTP error): treat the model as offline until the next check. */
+function markLocalDown(cfg, why) {
+  const key = `${cfg.baseUrl}|${cfg.model}`;
+  const was = localState.get(key);
+  localState.set(key, { at: Date.now(), up: false, why });
+  if (!was || was.up) console.log(`[local] ${cfg.baseUrl} stopped answering (${why}); using the cloud providers in order`);
+}
+
 async function localModelAvailable(cfg) {
   const models = await requestJson(`${cfg.baseUrl}/models`, {
     headers: openaiHeaders(cfg), timeout: 1500, retry: false,
@@ -515,4 +558,4 @@ async function localModelAvailable(cfg) {
   return (models.data || models.models || []).some((model) => (model.id || model.name) === cfg.model);
 }
 
-module.exports = { PROVIDERS, LANGUAGES, chat, listModels, localModelAvailable };
+module.exports = { PROVIDERS, LANGUAGES, chat, listModels, localModelAvailable, localSession, markLocalDown, portOpen };

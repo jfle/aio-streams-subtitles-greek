@@ -5,7 +5,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { chat, LANGUAGES, PROVIDERS, localModelAvailable } = require('./providers');
+const { chat, LANGUAGES, PROVIDERS, localSession, markLocalDown } = require('./providers');
 const { toSrt } = require('./subtitles');
 const { downloadCues } = require('./sync');
 const { DATA_DIR, effectiveLimits } = require('./config');
@@ -99,9 +99,13 @@ async function translateLines(lines, context, cfg, stats = null) {
       localAttempt: true,
     };
     const poolKey = `local-first:${local.baseUrl}`;
+    // The session flag says the local model is offline: go straight to the cloud, no waiting per batch.
+    const session = await localSession(local);
+    if (!session.up && stats) stats.localSkipped = (stats.localSkipped || 0) + 1;
+    if (!session.up && hasCloudCredentials(cfg)) { if (stats) stats.cloud += 1; return translate(cfg); }
     await acquireSlot(poolKey, 2, () => 0);
     try {
-      if (await localModelAvailable(local)) {
+      if (session.up) {
         const result = await translate(local);
         const got = filled(result, keys);
         if (got.length === keys.length) {
@@ -111,10 +115,11 @@ async function translateLines(lines, context, cfg, stats = null) {
         partial = got.length ? result : null;
         why = `incomplete answer (${got.length}/${keys.length} lines)`;
       } else {
-        why = `model ${local.model} not loaded / server not answering`;
+        why = session.why || `model ${local.model} not loaded / server not answering`;
       }
     } catch (e) {
       why = e.message || String(e);
+      markLocalDown(local, why);
     } finally {
       releaseSlot(poolKey);
     }

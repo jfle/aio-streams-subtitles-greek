@@ -354,7 +354,7 @@ if [[ $AIOSTREAMS -eq 1 ]]; then
       echo "# Login for this instance (username:password)."
       echo "AIOSTREAMS_AUTH=$AIO_USER:$AIO_NEW_PW"
       if [[ -n "$AIO_PUBLIC_URL" ]]; then echo "AIOSTREAMS_AUTH_REQUIRED=true"; fi
-      printf '%s\n' 'TEMPLATE_URLS=["https://raw.githubusercontent.com/jfle/aio-streams-subtitles-greek/main/templates/aiostreams-english-greek.json"]'
+      printf '%s\n' 'TEMPLATE_URLS=["https://raw.githubusercontent.com/jfle/aio-streams-subtitles-greek/main/templates/aiostreams-tablet-greek.json","https://raw.githubusercontent.com/jfle/aio-streams-subtitles-greek/main/templates/aiostreams-english-greek.json"]'
       printf '%s\n' 'FEATURED_TEMPLATE_IDS=["jfle.english-greek-stremio"]'
     } > "$AIO_DIR/.env"
     umask 022

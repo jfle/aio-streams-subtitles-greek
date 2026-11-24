@@ -167,3 +167,22 @@ test('Krikri runs first with thinking off and cloud takes over if it fails', asy
     await cloud.close();
   }
 });
+
+test('local model offline (port closed): one quick check, then straight to the cloud', async () => {
+  const cloud = await startMockProviders();
+  try {
+    // nothing listens on this port: like the PC with LM Studio being off
+    const srv = require('net').createServer(); await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const port = srv.address().port; await new Promise((r) => srv.close(r));
+    const { portOpen } = require('../src/providers');
+    assert.equal(await portOpen(`http://127.0.0.1:${port}/v1`), false);
+    const config = { provider: 'openai', model: 'cloud-model', apiKey: 'cloud-key', baseUrl: `${cloud.base}/v1`, localBaseUrl: `http://127.0.0.1:${port}/v1` };
+    const t0 = Date.now();
+    assert.equal((await api(addon.base, 'test', { config })).status, 200);
+    assert.equal((await api(addon.base, 'test', { config })).status, 200);
+    assert.equal(cloud.state.chatCalls, 2);
+    assert.ok(Date.now() - t0 < 3000, `took ${Date.now() - t0} ms`);
+  } finally {
+    await cloud.close();
+  }
+});
