@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AI-Fletouris — Configure</title>
-<link rel="icon" type="image/png" href="/logo.png?v=2.0.2">
+<link rel="icon" type="image/png" href="logo.png?v=3.0.1">
 <style>
   /* Greek flag theme: Greek blue #0D5EAF and white, nine stripes and the cross */
   :root {
@@ -79,7 +79,7 @@
 <div class="hero">
   <div class="cross"></div>
   <div class="hero-in">
-    <img src="/logo.png?v=2.0.2" alt="">
+    <img src="logo.png?v=3.0.1" alt="">
     <div>
       <h1>AI-Fletouris</h1>
       <p>Ελληνικοί υπότιτλοι με AI για το Stremio · AI Greek subtitles for Stremio</p>
@@ -257,7 +257,9 @@
   let credential = B.credential || null;
 
   // Coming back from OpenRouter sign-in: restore the form saved before leaving.
-  const hash = new URLSearchParams(location.hash.slice(1));
+  // The page may sit under a path prefix (e.g. a Home Assistant / Nabu Casa proxy): call the API next to it.
+const ROOT = location.pathname.replace(/(\/[\w-]{20,})?\/configure\/?$/, '');
+const hash = new URLSearchParams(location.hash.slice(1));
   let returnMsg = null;
   if (hash.has('cred') || hash.has('autherror')) {
     try { const saved = JSON.parse(sessionStorage.getItem('aisubs-form') || 'null'); if (saved) c = Object.assign({}, defaults, saved); } catch {}
@@ -405,7 +407,7 @@
   async function api(action, btn, extra = {}) {
     btn.disabled = true;
     try {
-      const r = await fetch(`/api/${action}`, {
+      const r = await fetch(`${ROOT}/api/${action}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(Object.assign({ config: collect(), password: $('password').value }, extra))
       });
@@ -475,7 +477,7 @@
       window.open(j.verificationUriComplete, '_blank', 'noopener');
       const poll = async () => {
         try {
-          const r = await fetch('/api/oauth/xai/poll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingId: j.pendingId, password: $('password').value }) });
+          const r = await fetch(ROOT + '/api/oauth/xai/poll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingId: j.pendingId, password: $('password').value }) });
           const k = await r.json();
           if (!r.ok) throw new Error(k.error || `HTTP ${r.status}`);
           if (k.status !== 'done') { xaiTimer = setTimeout(poll, 2000); return; }

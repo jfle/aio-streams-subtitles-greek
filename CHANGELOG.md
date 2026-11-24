@@ -4,6 +4,10 @@ All notable changes to this project. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-11-24
+### Fixed
+- The configure page works behind a path prefix (e.g. a Home Assistant / Nabu Casa proxy such as `https://…ui.nabu.casa/api/stremio/subs`): API calls and images resolve next to the page.
+
 ## [3.0.0] — 2026-11-24
 
 Major release: subtitles that are in sync with the stream, real subtitles first.

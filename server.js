@@ -474,8 +474,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (pathname === '/configure') return send(res, 200, renderPage(null), 'text/html; charset=utf-8');
     if (pathname === '/manifest.json') return send(res, 200, manifest(null, baseUrl(req)));
-    if (pathname === '/logo.png' || pathname === '/background.png') {
-      return send(res, 200, STATIC[pathname], 'image/png', { 'Cache-Control': 'public, max-age=604800' });
+    if ((m = pathname.match(/^(?:\/[\w-]{20,})?(\/(?:logo|background)\.png)$/))) {
+      return send(res, 200, STATIC[m[1]], 'image/png', { 'Cache-Control': 'public, max-age=604800' });
     }
 
     if ((m = pathname.match(/^\/([\w-]{20,})\/configure$/))) {
